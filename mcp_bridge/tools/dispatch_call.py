@@ -20,7 +20,7 @@ async def dispatch_clauver_call(
     phone_number: str,
     task: str,
     target_name: str | None = None,
-    boss: str = "Max",
+    boss: str | None = None,
 ) -> dict[str, Any]:
     """
     Validate inputs and create a LiveKit dispatch for a Clauver outbound call.
@@ -28,7 +28,10 @@ async def dispatch_clauver_call(
     validated_phone_number = validate_phone_number(phone_number)
     validated_task = validate_task(task)
     validated_target_name = validate_target_name(target_name)
-    validated_boss = validate_boss(boss)
+    # boss fallback: passed arg → BOSS_NAME env var → "boss"
+    import os
+    resolved_boss = boss or os.environ.get("BOSS_NAME") or "boss"
+    validated_boss = validate_boss(resolved_boss)
 
     return await create_dispatch(
         phone_number=validated_phone_number,

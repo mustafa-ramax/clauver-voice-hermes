@@ -1,5 +1,13 @@
 livekit>=1.0
 livekit-agents[openai,deepgram,cartesia,silero,turn_detector]~=1.0
 livekit-plugins-noise-cancellation~=0.2
+livekit-plugins-aws~=1.6
 python-dotenv~=1.0
 mcp>=1.0.0
+pyyaml>=6.0
+edge-tts>=6.1
+faster-whisper>=1.0
+pydub>=0.25
+audioop-lts>=0.2.1  # pydub needs this on Python 3.13+
+numpy>=1.24
+# EdgeTTS requires system ffmpeg: brew install ffmpeg
