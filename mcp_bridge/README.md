@@ -22,7 +22,7 @@ Dispatch a Clauver outbound call on behalf of the user.
   Name of the person being called
 
 - `boss` (string, optional)  
-  Name of the user the assistant is speaking for, defaults to `Max`
+  Name of the user the assistant is speaking for, defaults to `boss`
 
 #### Returns
 

@@ -15,8 +15,16 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 from livekit.agents import stt, tts
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions, NOT_GIVEN
+
+# Load Hermes .env for shared API keys (OPENROUTER_API_KEY, DEEPSEEK_API_KEY, etc.)
+# Clauver's own .env (LiveKit keys) is loaded separately by agent.py.
+# override=False ensures Clauver's own .env takes priority if both define the same key.
+_hermes_env = Path.home() / ".hermes" / ".env"
+if _hermes_env.exists():
+    load_dotenv(_hermes_env, override=False)
 
 logger = logging.getLogger("hermes-bridge")
 
@@ -46,11 +54,28 @@ def _require_env(name: str, provider: str) -> str:
     return value
 
 
-def _strip_global_prefix(model_id: str) -> str:
-    """Strip 'global.' prefix if present: global.anthropic.claude-... → anthropic.claude-..."""
-    if model_id.startswith("global."):
-        return model_id[len("global."):]
-    return model_id
+def _bedrock_resolve_profile(model_id: str, region: str) -> str:
+    """Resolve a bare Bedrock model ID to its cross-region inference profile.
+
+    Newer Claude models require a 'us.' / 'eu.' / 'apac.' prefix.
+    If the model already has a region prefix (including 'global.'), return as-is.
+    """
+    if model_id.startswith(("global.", "us.", "eu.", "apac.")):
+        return model_id
+
+    # Determine region prefix from AWS region
+    if region.startswith("us-"):
+        prefix = "us"
+    elif region.startswith("eu-"):
+        prefix = "eu"
+    elif region.startswith("ap-"):
+        prefix = "apac"
+    else:
+        prefix = "us"
+
+    profiled = f"{prefix}.{model_id}"
+    logger.info(f"Bedrock: using inference profile '{profiled}' (from '{model_id}')")
+    return profiled
 
 
 # =============================================================================
@@ -59,9 +84,14 @@ def _strip_global_prefix(model_id: str) -> str:
 
 
 def build_llm():
-    """Return a LiveKit LLM plugin instance based on Hermes config."""
-    # Allow override via env var — useful when Hermes provider (e.g. bedrock)
-    # doesn't support the model ID format expected by the LiveKit plugin.
+    """Return a LiveKit LLM plugin instance based on Hermes config.
+
+    Supports all Hermes providers dynamically:
+    - bedrock → aws.LLM (dedicated plugin, needs region)
+    - anthropic → anthropic.LLM (dedicated plugin, native API)
+    - All others → openai.LLM (OpenAI-compatible, uses base_url + api_key)
+    """
+    # Allow override via env var — useful when Hermes provider doesn't work
     override = os.getenv("CLAUVER_LLM_OVERRIDE", "").strip().lower()
     if override == "openai":
         from livekit.plugins import openai as openai_plugin
@@ -73,40 +103,100 @@ def build_llm():
     model_config = config.get("model", {})
     provider = model_config.get("provider", "openai")
     model_id = model_config.get("default", "gpt-5.3-chat-latest")
+    base_url = model_config.get("base_url") or None  # treat "" as None
+
+    # --- Special cases (need dedicated LiveKit plugins) ---
 
     if provider == "bedrock":
         from livekit.plugins import aws
-
         region = config.get("bedrock", {}).get("region", "us-east-1")
-        bedrock_model = _strip_global_prefix(model_id)
+        # 'global.' is a valid cross-region inference profile prefix (routes to nearest region).
+        # Bare model IDs (no prefix) get a region prefix added automatically.
+        bedrock_model = _bedrock_resolve_profile(model_id, region)
+        logger.info(f"Bedrock LLM: model={bedrock_model}, region={region}")
         return aws.LLM(model=bedrock_model, region=region)
 
-    elif provider == "openrouter":
-        from livekit.plugins import openai
-
-        api_key = _require_env("OPENROUTER_API_KEY", "OpenRouter")
-        return openai.LLM(
-            model=model_id,
-            base_url="https://openrouter.ai/api/v1",
-            api_key=api_key,
-        )
-
-    elif provider == "anthropic":
+    if provider == "anthropic":
         from livekit.plugins import anthropic
-
         api_key = _require_env("ANTHROPIC_API_KEY", "Anthropic")
         return anthropic.LLM(model=model_id, api_key=api_key)
 
-    elif provider == "openai":
-        from livekit.plugins import openai
+    # --- Generic path: all OpenAI-compatible providers ---
+    from livekit.plugins import openai
 
-        return openai.LLM(model=model_id)
+    # Resolve API key from known provider→env_var mapping
+    api_key = _resolve_provider_key(provider, model_config)
 
-    else:
-        from livekit.plugins import openai
+    if base_url:
+        logger.info(f"LLM provider '{provider}' via base_url={base_url}, model={model_id}")
+        return openai.LLM(model=model_id, base_url=base_url, api_key=api_key)
 
-        logger.warning(f"Unknown LLM provider '{provider}', falling back to openai/gpt-5.3-chat-latest")
-        return openai.LLM(model="gpt-5.3-chat-latest")
+    # No base_url in config — use defaults for known providers
+    known_urls = {
+        "openrouter": "https://openrouter.ai/api/v1",
+        "deepseek": "https://api.deepseek.com/v1",
+        "xai": "https://api.x.ai/v1",
+        "nvidia": "https://integrate.api.nvidia.com/v1",
+        "novita": "https://api.novita.ai/openai/v1",
+        "huggingface": "https://router.huggingface.co/v1",
+    }
+
+    if provider in known_urls:
+        logger.info(f"LLM: {provider} → {known_urls[provider]}, model={model_id}")
+        return openai.LLM(model=model_id, base_url=known_urls[provider], api_key=api_key)
+
+    # openai / openai-api — no base_url needed
+    if provider in ("openai", "openai-api"):
+        logger.info(f"LLM: openai, model={model_id}")
+        return openai.LLM(model=model_id, api_key=api_key)
+
+    # Unknown provider, no base_url — fall back with warning
+    logger.warning(
+        f"Unknown LLM provider '{provider}' with no base_url in config. "
+        f"Falling back to openai.LLM(model='gpt-4o-mini'). "
+        f"Set model.base_url in ~/.hermes/config.yaml or use CLAUVER_LLM_OVERRIDE=openai"
+    )
+    return openai.LLM(model="gpt-5.3-chat-latest")
+
+
+# Provider → env var name for API key resolution
+_PROVIDER_KEY_MAP = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "openai-api": "OPENAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "xai": "XAI_API_KEY",
+    "zai": "GLM_API_KEY",
+    "kimi-coding": "KIMI_API_KEY",
+    "kimi-coding-cn": "KIMI_CN_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
+    "minimax-cn": "MINIMAX_CN_API_KEY",
+    "huggingface": "HF_TOKEN",
+    "nvidia": "NVIDIA_API_KEY",
+    "novita": "NOVITA_API_KEY",
+    "gemini": "GOOGLE_API_KEY",
+    "alibaba": "DASHSCOPE_API_KEY",
+    "stepfun": "STEPFUN_API_KEY",
+    "custom": None,
+}
+
+
+def _resolve_provider_key(provider: str, model_config: dict) -> str | None:
+    """Resolve API key for a provider: check map → config → None."""
+    env_var = _PROVIDER_KEY_MAP.get(provider)
+    if env_var:
+        key = os.getenv(env_var)
+        if key:
+            return key
+        # Key not found — not fatal for local endpoints, warn for cloud
+        logger.debug(f"Provider '{provider}' key {env_var} not found in env")
+
+    # Try api_key from config (custom endpoints store it there)
+    config_key = model_config.get("api_key")
+    if config_key:
+        return config_key
+
+    return None
 
 
 # =============================================================================

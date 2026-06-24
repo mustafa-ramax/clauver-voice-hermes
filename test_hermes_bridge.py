@@ -11,12 +11,16 @@ def main():
 
     # 1. Load config and detect providers
     config = load_hermes_config()
-    llm_provider = config.get("model", {}).get("provider", "unknown")
-    llm_model = config.get("model", {}).get("default", "unknown")
+    model_config = config.get("model", {})
+    llm_provider = model_config.get("provider", "unknown")
+    llm_model = model_config.get("default", "unknown")
+    llm_base_url = model_config.get("base_url", "")
     tts_provider = config.get("tts", {}).get("provider", "unknown")
     stt_provider = config.get("stt", {}).get("provider", "unknown")
 
-    print(f"LLM provider: {llm_provider} (model: {llm_model})")
+    print(f"LLM provider: {llm_provider}")
+    print(f"LLM model:    {llm_model}")
+    print(f"LLM base_url: {llm_base_url or '(none)'}")
     print(f"TTS provider: {tts_provider}")
     print(f"STT provider: {stt_provider}")
     print()

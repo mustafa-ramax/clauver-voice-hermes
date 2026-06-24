@@ -8,6 +8,8 @@ import asyncio
 import json
 import logging
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -16,7 +18,8 @@ from mcp.types import TextContent, Tool
 from mcp_bridge.lib.config import ensure_livekit_env
 from mcp_bridge.tools.dispatch_call import dispatch_clauver_call
 
-load_dotenv()
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_PROJECT_ROOT / ".env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("clauver-mcp-bridge")
@@ -50,7 +53,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "boss": {
                         "type": "string",
-                        "description": "Optional name of the user the assistant is speaking for; defaults to Max",
+                        "description": "Optional name of the user the assistant is speaking for; defaults to boss",
                     },
                 },
                 "required": ["phone_number", "task"],
