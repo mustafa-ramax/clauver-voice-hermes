@@ -153,7 +153,7 @@ def build_llm():
     # Unknown provider, no base_url — fall back with warning
     logger.warning(
         f"Unknown LLM provider '{provider}' with no base_url in config. "
-        f"Falling back to openai.LLM(model='gpt-4o-mini'). "
+        f"Falling back to openai.LLM(model='gpt-5.3-chat-latest'). "
         f"Set model.base_url in ~/.hermes/config.yaml or use CLAUVER_LLM_OVERRIDE=openai"
     )
     return openai.LLM(model="gpt-5.3-chat-latest")
@@ -269,10 +269,41 @@ class EdgeTTSAdapter(tts.TTS):
 
 
 def build_tts():
-    """Return a LiveKit TTS plugin instance based on Hermes config."""
+    """Return a LiveKit TTS plugin instance based on Hermes config.
+
+    Priority: CLAUVER_TTS_OVERRIDE → Hermes config → Edge TTS (free fallback).
+    """
+    # --- Override check ---
+    override = os.getenv("CLAUVER_TTS_OVERRIDE", "").strip().lower()
+    if override:
+        tts_instance = _build_tts_for_provider(override, {})
+        if tts_instance:
+            logger.info(f"TTS: override → {override}")
+            return tts_instance
+        logger.warning(f"Unknown CLAUVER_TTS_OVERRIDE '{override}', ignoring")
+
+    # --- Read from Hermes config ---
     config = load_hermes_config()
     tts_config = config.get("tts", {})
-    provider = tts_config.get("provider", "openai")
+    provider = tts_config.get("provider", "edge")
+
+    tts_instance = _build_tts_for_provider(provider, tts_config)
+    if tts_instance:
+        logger.info(f"TTS: {provider} (from Hermes config)")
+        return tts_instance
+
+    # --- Fallback: Edge TTS (free) ---
+    logger.warning(f"TTS provider '{provider}' not supported. Using free Edge TTS.")
+    return EdgeTTSAdapter(voice="en-US-AvaMultilingualNeural")
+
+
+def _get_tts_api_key(provider_env_var: str) -> str | None:
+    """Resolve TTS API key: CLAUVER_TTS_API_KEY → provider-specific → None."""
+    return os.getenv("CLAUVER_TTS_API_KEY") or os.getenv(provider_env_var) or None
+
+
+def _build_tts_for_provider(provider: str, tts_config: dict):
+    """Build TTS instance for a given provider. Returns None if unsupported."""
 
     if provider == "edge":
         voice = tts_config.get("edge", {}).get("voice", "en-US-AvaMultilingualNeural")
@@ -280,40 +311,82 @@ def build_tts():
 
     elif provider == "openai":
         from livekit.plugins import openai
-
-        oai_cfg = tts_config.get("openai", {})
+        cfg = tts_config.get("openai", {})
         return openai.TTS(
-            model=oai_cfg.get("model", "gpt-4o-mini-tts"),
-            voice=oai_cfg.get("voice", "alloy"),
+            model=cfg.get("model", "gpt-4o-mini-tts"),
+            voice=cfg.get("voice", "alloy"),
         )
 
     elif provider == "elevenlabs":
         from livekit.plugins import elevenlabs
-
-        el_cfg = tts_config.get("elevenlabs", {})
-        _require_env("ELEVEN_API_KEY", "ElevenLabs TTS")
+        key = _get_tts_api_key("ELEVEN_API_KEY")
+        if not key:
+            raise RuntimeError("ElevenLabs TTS requires CLAUVER_TTS_API_KEY or ELEVEN_API_KEY")
+        cfg = tts_config.get("elevenlabs", {})
         return elevenlabs.TTS(
-            voice_id=el_cfg.get("voice_id", "pNInz6obpgDQGcFmaJgB"),
-            model=el_cfg.get("model_id", "eleven_multilingual_v2"),
+            voice_id=cfg.get("voice_id", "pNInz6obpgDQGcFmaJgB"),
+            model=cfg.get("model_id", "eleven_multilingual_v2"),
+            api_key=key,
         )
 
     elif provider == "cartesia":
         from livekit.plugins import cartesia
+        key = _get_tts_api_key("CARTESIA_API_KEY")
+        if not key:
+            raise RuntimeError("Cartesia TTS requires CLAUVER_TTS_API_KEY or CARTESIA_API_KEY")
+        return cartesia.TTS(api_key=key)
 
-        _require_env("CARTESIA_API_KEY", "Cartesia TTS")
-        return cartesia.TTS()
-
-    else:
+    elif provider == "xai":
         from livekit.plugins import openai
+        key = _get_tts_api_key("XAI_API_KEY")
+        if not key:
+            raise RuntimeError("xAI TTS requires CLAUVER_TTS_API_KEY or XAI_API_KEY")
+        cfg = tts_config.get("xai", {})
+        return openai.TTS(
+            model="tts-1",
+            voice=cfg.get("voice_id", "eve"),
+            base_url="https://api.x.ai/v1",
+            api_key=key,
+        )
 
-        logger.warning(f"Unknown TTS provider '{provider}', falling back to openai/alloy")
-        return openai.TTS(voice="alloy")
+    elif provider == "gemini":
+        from livekit.plugins import google
+        cfg = tts_config.get("gemini", {})
+        return google.TTS(
+            model=cfg.get("model", "gemini-2.5-flash-preview-tts"),
+            voice=cfg.get("voice", "Kore"),
+        )
+
+    elif provider == "mistral":
+        from livekit.plugins import openai
+        key = _get_tts_api_key("MISTRAL_API_KEY")
+        if not key:
+            raise RuntimeError("Mistral TTS requires CLAUVER_TTS_API_KEY or MISTRAL_API_KEY")
+        cfg = tts_config.get("mistral", {})
+        return openai.TTS(
+            model=cfg.get("model", "voxtral-mini-tts-2603"),
+            voice=cfg.get("voice_id", "c69964a6-ab8b-4f8a-9465-ec0925096ec8"),
+            base_url="https://api.mistral.ai/v1",
+            api_key=key,
+        )
+
+    elif provider == "deepgram":
+        from livekit.plugins import deepgram
+        key = _get_tts_api_key("DEEPGRAM_API_KEY")
+        if not key:
+            raise RuntimeError("Deepgram TTS requires CLAUVER_TTS_API_KEY or DEEPGRAM_API_KEY")
+        return deepgram.TTS(api_key=key)
+
+    return None  # unsupported
 
 
 def is_streaming_tts() -> bool:
     """Return False for non-streaming TTS providers (edge), True otherwise."""
+    override = os.getenv("CLAUVER_TTS_OVERRIDE", "").strip().lower()
+    if override:
+        return override != "edge"
     config = load_hermes_config()
-    provider = config.get("tts", {}).get("provider", "openai")
+    provider = config.get("tts", {}).get("provider", "edge")
     return provider != "edge"
 
 
@@ -400,24 +473,40 @@ class WhisperSTTAdapter(stt.STT):
 
 
 def build_stt():
-    """Return a LiveKit STT plugin instance based on Hermes config."""
-    # Check override first
+    """Return a LiveKit STT plugin instance based on Hermes config.
+
+    Priority: CLAUVER_STT_OVERRIDE → Hermes config → local Whisper (free fallback).
+    """
+    # --- Override check ---
     override = os.getenv("CLAUVER_STT_OVERRIDE", "").strip().lower()
     if override:
-        if override == "deepgram":
-            from livekit.plugins import deepgram
+        stt_instance = _build_stt_for_provider(override, {})
+        if stt_instance:
+            logger.info(f"STT: override → {override}")
+            return stt_instance
+        logger.warning(f"Unknown CLAUVER_STT_OVERRIDE '{override}', ignoring")
 
-            return deepgram.STT()
-        elif override == "openai":
-            from livekit.plugins import openai
-
-            return openai.STT()
-        else:
-            logger.warning(f"Unknown CLAUVER_STT_OVERRIDE '{override}', ignoring")
-
+    # --- Read from Hermes config ---
     config = load_hermes_config()
     stt_config = config.get("stt", {})
-    provider = stt_config.get("provider", "openai")
+    provider = stt_config.get("provider", "local")
+
+    stt_instance = _build_stt_for_provider(provider, stt_config)
+    if stt_instance:
+        return stt_instance
+
+    # --- Fallback: local Whisper (free) ---
+    logger.warning(f"STT provider '{provider}' not supported. Using free local Whisper.")
+    return WhisperSTTAdapter(model="base")
+
+
+def _get_stt_api_key(provider_env_var: str) -> str | None:
+    """Resolve STT API key: CLAUVER_STT_API_KEY → provider-specific → None."""
+    return os.getenv("CLAUVER_STT_API_KEY") or os.getenv(provider_env_var) or None
+
+
+def _build_stt_for_provider(provider: str, stt_config: dict):
+    """Build STT instance for a given provider. Returns None if unsupported."""
 
     if provider == "local":
         model = stt_config.get("local", {}).get("model", "base")
@@ -425,27 +514,42 @@ def build_stt():
             "Local Whisper STT is configured — audio will be processed in chunks on CPU. "
             "For better call quality set CLAUVER_STT_OVERRIDE=deepgram"
         )
+        logger.info(f"STT: local whisper (model={model})")
         return WhisperSTTAdapter(model=model)
-
-    elif provider == "openai":
-        from livekit.plugins import openai
-
-        oai_cfg = stt_config.get("openai", {})
-        return openai.STT(model=oai_cfg.get("model", "whisper-1"))
 
     elif provider == "deepgram":
         from livekit.plugins import deepgram
+        key = _get_stt_api_key("DEEPGRAM_API_KEY")
+        if not key:
+            raise RuntimeError("Deepgram STT requires CLAUVER_STT_API_KEY or DEEPGRAM_API_KEY")
+        logger.info("STT: deepgram")
+        return deepgram.STT(api_key=key)
 
-        return deepgram.STT()
+    elif provider == "openai":
+        from livekit.plugins import openai
+        cfg = stt_config.get("openai", {})
+        logger.info("STT: openai")
+        return openai.STT(model=cfg.get("model", "whisper-1"))
 
     elif provider == "elevenlabs":
         from livekit.plugins import elevenlabs
+        key = _get_stt_api_key("ELEVEN_API_KEY")
+        if not key:
+            raise RuntimeError("ElevenLabs STT requires CLAUVER_STT_API_KEY or ELEVEN_API_KEY")
+        logger.info("STT: elevenlabs")
+        return elevenlabs.STT(api_key=key)
 
-        _require_env("ELEVEN_API_KEY", "ElevenLabs STT")
-        return elevenlabs.STT()
-
-    else:
+    elif provider == "mistral":
         from livekit.plugins import openai
+        key = _get_stt_api_key("MISTRAL_API_KEY")
+        if not key:
+            raise RuntimeError("Mistral STT requires CLAUVER_STT_API_KEY or MISTRAL_API_KEY")
+        cfg = stt_config.get("mistral", {})
+        logger.info("STT: mistral")
+        return openai.STT(
+            model=cfg.get("model", "voxtral-mini-latest"),
+            base_url="https://api.mistral.ai/v1",
+            api_key=key,
+        )
 
-        logger.warning(f"Unknown STT provider '{provider}', falling back to openai")
-        return openai.STT()
+    return None  # unsupported
