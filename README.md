@@ -50,7 +50,12 @@ hermes skills install https://raw.githubusercontent.com/mustafa-ramax/clauver-vo
 ### 2. Run the setup script
 
 ```bash
-bash "$(find ~/.hermes/skills -path '*/clauver-telephony/scripts/setup.sh' -print -quit)"
+bash <(curl -sL https://raw.githubusercontent.com/mustafa-ramax/clauver-voice-hermes/main/setup.sh)
+```
+
+Or clone manually (works in Git Bash on Windows):
+```bash
+git clone https://github.com/mustafa-ramax/clauver-voice-hermes.git ~/.clauver && cd ~/.clauver && bash setup.sh
 ```
 
 This clones the repo to `~/.clauver/`, installs dependencies, and registers the MCP server in Hermes.

@@ -71,10 +71,16 @@ dispatch_clauver_call(
 
 ## Setup (One Time)
 
-Run the setup script:
+Run the installer (clones repo, installs deps, registers MCP server):
 
 ```bash
-bash "$(find ~/.hermes/skills -path '*/clauver-telephony/scripts/setup.sh' -print -quit)"
+bash <(curl -sL https://raw.githubusercontent.com/mustafa-ramax/clauver-voice-hermes/main/setup.sh)
+```
+
+Or if you prefer not piping to bash:
+```bash
+git clone https://github.com/mustafa-ramax/clauver-voice-hermes.git ~/.clauver
+cd ~/.clauver && bash setup.sh
 ```
 
 Then fill in 4 values in `~/.clauver/.env`:
