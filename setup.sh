@@ -106,6 +106,16 @@ else
     "$VENV_PIP" install --quiet -r requirements.txt
 fi
 
+# Pre-download Whisper STT model so first call works instantly
+if [ -z "${CLAUVER_STT_OVERRIDE:-}" ]; then
+    echo "   Pre-downloading Whisper STT model (~142MB, one-time)..."
+    "$VENV_PYTHON" -c "
+from faster_whisper import WhisperModel
+WhisperModel('base', device='cpu', compute_type='int8')
+print('   \u2713 Whisper model cached')
+" 2>/dev/null || echo "   ⚠️  Whisper preload skipped (will download on first worker start)"
+fi
+
 # --- Generate .env if not exists ---
 if [ ! -f ".env" ]; then
     cp .env.example .env

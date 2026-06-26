@@ -391,6 +391,26 @@ def prewarm(proc: JobProcess):
         min_silence_duration=0.3,       # was 0.55s — tighter silence detection, faster STT trigger
         activation_threshold=0.6,       # slightly higher to reduce Arabic hallucination on noise
     )
+
+    # Prewarm Whisper only if local STT will be used
+    if not os.getenv("CLAUVER_STT_OVERRIDE"):
+        cfg = {}
+        try:
+            from hermes_bridge import load_hermes_config
+            cfg = load_hermes_config()
+        except Exception:
+            pass
+
+        stt_provider = cfg.get("stt", {}).get("provider", "local")
+        if stt_provider == "local":
+            try:
+                from faster_whisper import WhisperModel
+                model_size = cfg.get("stt", {}).get("local", {}).get("model", "base")
+                logger.info(f"Preloading Whisper model: {model_size}")
+                WhisperModel(model_size, device="cpu", compute_type="int8")
+                logger.info("Whisper model ready")
+            except Exception as e:
+                logger.warning(f"Whisper preload failed: {e}")
     
 if __name__ == "__main__":
     _write_pid_file()
