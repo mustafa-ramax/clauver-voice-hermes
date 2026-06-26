@@ -71,6 +71,19 @@ dispatch_clauver_call(
 
 ## Setup (One Time)
 
+### Prerequisites
+
+Before setup, create two free accounts:
+
+1. **LiveKit Cloud** — Sign up at https://cloud.livekit.io (free for builders, no credit card)
+   - After signup, go to Settings → Keys → copy your Project URL, API Key, and API Secret
+
+2. **Twilio** — Sign up at https://twilio.com (need a phone number, ~$1/month)
+   - After signup, go to Console → Buy a phone number (any country)
+   - Note your Account SID and Auth Token from the console dashboard
+
+### Step 1: Install Clauver
+
 Run the installer (clones repo, installs deps, registers MCP server):
 
 ```bash
@@ -83,8 +96,22 @@ git clone https://github.com/mustafa-ramax/clauver-voice-hermes.git ~/.clauver
 cd ~/.clauver && bash setup.sh
 ```
 
-Then fill in 4 values in `~/.clauver/.env`:
+### Step 2: Connect Your Phone Number
 
+Run the provisioning script — it connects Twilio to LiveKit automatically:
+
+```bash
+cd ~/.clauver && .venv/bin/python scripts/provision_sip.py
+```
+
+The script will ask for:
+- Twilio Account SID + Auth Token (from twilio.com/console)
+- LiveKit URL + API Key + Secret (from cloud.livekit.io → Settings → Keys)
+- Which phone number to use (picks from your Twilio numbers)
+
+It handles the SIP trunk configuration on both sides and writes everything to `.env`.
+
+**Already have a SIP trunk?** Just edit `~/.clauver/.env` manually:
 ```
 LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=your-key
@@ -92,10 +119,11 @@ LIVEKIT_API_SECRET=your-secret
 SIP_OUTBOUND_TRUNK_ID=your-trunk-id
 ```
 
-Get these from [cloud.livekit.io](https://cloud.livekit.io) (free tier available).
-The SIP trunk connects to your phone provider (e.g. Twilio).
+### Step 3: Done
 
-That's it. LLM, TTS, and STT are auto-detected from your Hermes config.
+Restart Hermes. Say: "Call +61... and tell them ..."
+
+LLM, TTS, and STT are auto-detected from your Hermes config. No extra setup needed.
 
 ## What It Costs
 

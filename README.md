@@ -47,6 +47,12 @@ Just talk to Hermes naturally:
 hermes skills install https://raw.githubusercontent.com/mustafa-ramax/clauver-voice-hermes/main/skill/SKILL.md
 ```
 
+Then tell Hermes:
+
+> "I installed the clauver-telephony skill. Load it and read it carefully, then set it up for me — run the setup script, then guide me through filling in the LiveKit and SIP credentials."
+
+Hermes will handle the rest. Or if you prefer to do it manually:
+
 ### 2. Run the setup script
 
 ```bash
@@ -60,9 +66,25 @@ git clone https://github.com/mustafa-ramax/clauver-voice-hermes.git ~/.clauver &
 
 This clones the repo to `~/.clauver/`, installs dependencies, and registers the MCP server in Hermes.
 
-### 3. Add your LiveKit keys
+### 3. Connect your phone number
 
-Edit `~/.clauver/.env` and fill in 4 values:
+You need two accounts (both have free tiers):
+
+| Service | What it does | Sign up | Cost |
+|---------|-------------|---------|------|
+| **LiveKit Cloud** | Handles the AI voice connection | [cloud.livekit.io](https://cloud.livekit.io) | Free for builders |
+| **Twilio** | Provides the actual phone line | [twilio.com](https://www.twilio.com/try-twilio) | ~$1/month for a number |
+
+**Recommended: Run the provisioning script** (connects everything in 30 seconds):
+
+```bash
+cd ~/.clauver && .venv/bin/python scripts/provision_sip.py
+```
+
+It asks for your Twilio + LiveKit credentials, shows your phone numbers,
+and sets up the SIP trunks on both sides automatically. Nothing else to configure.
+
+**Or fill in `.env` manually** (if you already have a SIP trunk):
 
 ```env
 LIVEKIT_URL=wss://your-project.livekit.cloud
@@ -71,10 +93,10 @@ LIVEKIT_API_SECRET=your-secret
 SIP_OUTBOUND_TRUNK_ID=your-trunk-id
 ```
 
-**Where to get these:**
-- **LiveKit Cloud** — Free for builders (no credit card): [livekit.com/pricing](https://livekit.com/pricing)
-- **SIP Trunk** — Twilio or any LiveKit-compatible SIP provider. Gives you a phone number.
-- **ffmpeg** — Required for Edge TTS: `brew install ffmpeg` (macOS) / `apt install ffmpeg` (Linux)
+**Also required:** ffmpeg for Edge TTS (the free voice):
+- macOS: `brew install ffmpeg`
+- Linux: `sudo apt install ffmpeg`
+- Windows: `winget install ffmpeg`
 
 Restart Hermes, then say: *"Call +61... and tell them ..."*
 

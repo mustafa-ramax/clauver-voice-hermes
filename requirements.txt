@@ -9,7 +9,10 @@ python-dotenv~=1.0
 mcp>=1.0.0
 pyyaml>=6.0
 pydub>=0.25
-audioop-lts>=0.2.1  # pydub needs this on Python 3.13+
+audioop-lts>=0.2.1; python_version >= "3.13"  # pydub needs this on Python 3.13+ (audioop removed from stdlib)
 numpy>=1.24
 # EdgeTTS requires system ffmpeg: brew install ffmpeg
 # Note: xAI and Mistral TTS/STT use livekit-plugins-openai (OpenAI-compatible) — no extra package needed
+
+# Optional: only needed for automated SIP provisioning (scripts/provision_sip.py)
+# twilio>=9.0
