@@ -5,6 +5,7 @@ import logging
 from dotenv import load_dotenv
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 from livekit import rtc, api
@@ -30,11 +31,37 @@ from livekit.plugins import (
 )
 from hermes_bridge import build_stt, build_tts, build_llm, is_streaming_tts
 
-load_dotenv(dotenv_path=".env")
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 logger = logging.getLogger("clauver-general-agent")
 logger.setLevel(logging.INFO)
 
 outbound_trunk_id = os.getenv("SIP_OUTBOUND_TRUNK_ID")
+
+# --- Worker lifecycle: PID file + idle shutdown ---
+import atexit
+import time
+import threading
+
+_PID_FILE = Path("/tmp/clauver-worker.pid")
+_last_job_time = time.time()
+
+
+def _write_pid_file():
+    _PID_FILE.write_text(str(os.getpid()))
+
+
+def _remove_pid_file():
+    _PID_FILE.unlink(missing_ok=True)
+
+
+def _idle_shutdown_loop():
+    """Background thread: exit after 2 min idle (auto mode only)."""
+    while True:
+        time.sleep(30)
+        if time.time() - _last_job_time > 120:
+            logger.info("No jobs for 2 min — shutting down (auto mode)")
+            _remove_pid_file()
+            os._exit(0)
 
 
 class OutboundCaller(Agent):
@@ -231,6 +258,9 @@ class OutboundCaller(Agent):
         return "Result saved."
 
 async def entrypoint(ctx: JobContext):
+    global _last_job_time
+    _last_job_time = time.time()
+
     logger.info(f"connecting to room {ctx.room.name}")
     await ctx.connect()
 
@@ -363,11 +393,22 @@ def prewarm(proc: JobProcess):
     )
     
 if __name__ == "__main__":
+    _write_pid_file()
+    atexit.register(_remove_pid_file)
+
+    # Start idle shutdown thread in auto mode only
+    if os.getenv("CLAUVER_WORKER_MODE", "auto").strip().lower() != "persistent":
+        t = threading.Thread(target=_idle_shutdown_loop, daemon=True)
+        t.start()
+        logger.info("Worker running in auto mode (idle shutdown after 2 min)")
+    else:
+        logger.info("Worker running in persistent mode (no idle shutdown)")
+
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,
             agent_name="clauver-general",
-            num_idle_processes=2,
+            num_idle_processes=1,
         )
     )

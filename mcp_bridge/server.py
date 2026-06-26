@@ -76,20 +76,24 @@ async def call_tool(
         phone_number=args.get("phone_number"),
         task=args.get("task"),
         target_name=args.get("target_name"),
-        boss=args.get("boss", "boss"),
+        boss=str(args["boss"]) if "boss" in args else None,
     )
 
+    metadata = result["metadata"]
+    from mcp_bridge.lib.worker_manager import LOG_FILE
     return [
         TextContent(
             type="text",
             text=json.dumps(
                 {
                     "status": "ok",
+                    "message": f"Call dispatched. Clauver is calling {metadata['phone_number']} on behalf of {metadata['boss']}.",
+                    "worker_status": result.get("worker_status", "unknown"),
+                    "call_to": metadata["phone_number"],
+                    "task": metadata["task"],
+                    "logs": str(LOG_FILE),
                     "dispatch_id": result["dispatch_id"],
                     "room": result["room"],
-                    "agent_name": result["agent_name"],
-                    "request_id": result["request_id"],
-                    "metadata": result["metadata"],
                 },
                 ensure_ascii=False,
             ),
