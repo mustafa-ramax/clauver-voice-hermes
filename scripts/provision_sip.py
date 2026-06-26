@@ -13,7 +13,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import getpass
 import os
 import random
 import re
@@ -46,11 +45,62 @@ def _print_header():
     print()
 
 
+def _input_secret(prompt: str) -> str:
+    """Read a password echoing * per character. Falls back to silent input on error."""
+    print(prompt, end="", flush=True)
+    if os.name == "nt":
+        import msvcrt
+        chars = []
+        while True:
+            ch = msvcrt.getwch()
+            if ch in ("\r", "\n"):
+                print()
+                break
+            elif ch == "\x08":
+                if chars:
+                    chars.pop()
+                    print("\b \b", end="", flush=True)
+            elif ch == "\x03":
+                raise KeyboardInterrupt
+            else:
+                chars.append(ch)
+                print("*", end="", flush=True)
+        return "".join(chars)
+    else:
+        try:
+            import termios, tty
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            chars = []
+            try:
+                tty.setraw(fd)
+                while True:
+                    ch = sys.stdin.read(1)
+                    if ch in ("\r", "\n"):
+                        print()
+                        break
+                    elif ch in ("\x7f", "\x08"):
+                        if chars:
+                            chars.pop()
+                            print("\b \b", end="", flush=True)
+                    elif ch == "\x03":
+                        raise KeyboardInterrupt
+                    else:
+                        chars.append(ch)
+                        print("*", end="", flush=True)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            return "".join(chars)
+        except Exception:
+            import getpass
+            return getpass.getpass("")
+
+
 def _input(prompt: str, secret: bool = False, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
     full_prompt = f"  {prompt}{suffix}: "
     if secret:
-        value = getpass.getpass(full_prompt)
+        value = _input_secret(full_prompt)
     else:
         value = input(full_prompt)
     return value.strip() or default
@@ -111,15 +161,36 @@ def _list_twilio_numbers(client) -> list:
     return numbers
 
 
-def _find_existing_clauver_trunk(client) -> str | None:
-    """Check if a clauver trunk already exists on Twilio."""
+def _find_clauver_trunks(client) -> list:
+    """Return all Clauver trunks on the Twilio account."""
     trunks = client.trunking.v1.trunks.list(limit=50)
-    for t in trunks:
-        if t.friendly_name and "clauver" in t.friendly_name.lower():
-            return t.sid
-        if t.domain_name and "clauver" in t.domain_name.lower():
-            return t.sid
-    return None
+    return [
+        t for t in trunks
+        if (t.friendly_name and "clauver" in t.friendly_name.lower())
+        or (t.domain_name and "clauver" in t.domain_name.lower())
+    ]
+
+
+def _select_clauver_trunk(client, trunks: list):
+    """Auto-select if one trunk, show a numbered menu if many. Returns trunk object."""
+    if len(trunks) == 1:
+        return trunks[0]
+
+    print("  Multiple Clauver trunks found on your Twilio account:")
+    for i, t in enumerate(trunks, 1):
+        nums = client.trunking.v1.trunks(t.sid).phone_numbers.list(limit=3)
+        num_str = ", ".join(n.phone_number for n in nums) or "no number"
+        print(f"    {i}. {t.domain_name}  ({num_str})")
+    print()
+    raw = _input(f"Select trunk [1-{len(trunks)}]")
+    try:
+        choice = int(raw)
+        if choice < 1 or choice > len(trunks):
+            raise ValueError
+    except ValueError:
+        print("  ❌ Invalid selection.")
+        sys.exit(1)
+    return trunks[choice - 1]
 
 
 def _create_twilio_trunk(client, phone_number_sid: str, phone_number: str):
@@ -132,7 +203,7 @@ def _create_twilio_trunk(client, phone_number_sid: str, phone_number: str):
     sip_username = f"clauver_{_random_string(8)}"
     sip_password = _random_string(24, string.ascii_letters + string.digits)
 
-    print(f"  Creating Twilio SIP trunk ({domain_name})...", end=" ", flush=True)
+    print(f"  Creating Twilio SIP trunk (random ID: {domain_name})...", end=" ", flush=True)
 
     # Create trunk (retry with different domain if taken)
     trunk = None
@@ -158,12 +229,12 @@ def _create_twilio_trunk(client, phone_number_sid: str, phone_number: str):
 
     # Create credential list
     print("  Setting termination credentials...", end=" ", flush=True)
-    cred_list = client.sip.credential_lists.create(friendly_name="Clauver SIP Auth")
+    cred_list = client.sip.credential_lists.create(friendly_name=f"Clauver SIP Auth {domain_suffix}")
     client.sip.credential_lists(cred_list.sid).credentials.create(
         username=sip_username, password=sip_password
     )
     # Associate with trunk
-    client.trunking.v1.trunks(trunk.sid).credential_lists.create(
+    client.trunking.v1.trunks(trunk.sid).credentials_lists.create(
         credential_list_sid=cred_list.sid
     )
     print("✓")
@@ -184,6 +255,24 @@ def _create_twilio_trunk(client, phone_number_sid: str, phone_number: str):
     }
 
 
+def _add_twilio_origination(client, trunk_sid: str, livekit_sip_host: str):
+    """Add origination URI to Twilio trunk so inbound PSTN calls route to LiveKit."""
+    print("  Adding Twilio origination URI...", end=" ", flush=True)
+    client.trunking.v1.trunks(trunk_sid).origination_urls.create(
+        sip_url=f"sip:{livekit_sip_host}",
+        priority=1,
+        weight=1,
+        enabled=True,
+        friendly_name="LiveKit Inbound",
+    )
+    print("✓")
+
+
+def _derive_livekit_sip_host(livekit_url: str) -> str:
+    host = livekit_url.replace("wss://", "").replace("ws://", "").rstrip("/")
+    return f"sip.{host}"
+
+
 async def _create_livekit_trunk(domain_name: str, sip_username: str, sip_password: str, phone_number: str) -> str:
     """Create LiveKit outbound SIP trunk. Returns trunk ID."""
     from livekit import api
@@ -200,7 +289,7 @@ async def _create_livekit_trunk(domain_name: str, sip_username: str, sip_passwor
             auth_username=sip_username,
             auth_password=sip_password,
         )
-        result = await lkapi.sip.create_sip_outbound_trunk(
+        result = await lkapi.sip.create_outbound_trunk(
             CreateSIPOutboundTrunkRequest(trunk=trunk_info)
         )
         trunk_id = result.sip_trunk_id
@@ -212,6 +301,70 @@ async def _create_livekit_trunk(domain_name: str, sip_username: str, sip_passwor
         sys.exit(1)
     finally:
         await lkapi.aclose()
+
+
+async def _create_livekit_inbound(phone_number: str) -> tuple[str, str]:
+    """Create LiveKit inbound trunk + dispatch rule. Returns (trunk_id, rule_id)."""
+    from livekit import api
+    from livekit.protocol.sip import (
+        CreateSIPInboundTrunkRequest,
+        SIPInboundTrunkInfo,
+        CreateSIPDispatchRuleRequest,
+        SIPDispatchRule,
+        SIPDispatchRuleIndividual,
+    )
+
+    lkapi = api.LiveKitAPI()
+    try:
+        print("  Creating LiveKit inbound trunk...", end=" ", flush=True)
+        trunk_result = await lkapi.sip.create_inbound_trunk(
+            CreateSIPInboundTrunkRequest(trunk=SIPInboundTrunkInfo(
+                name="Clauver Inbound",
+                numbers=[phone_number],
+            ))
+        )
+        trunk_id = trunk_result.sip_trunk_id
+        print("✓")
+
+        print("  Creating LiveKit dispatch rule...", end=" ", flush=True)
+        rule_result = await lkapi.sip.create_dispatch_rule(
+            CreateSIPDispatchRuleRequest(
+                trunk_ids=[trunk_id],
+                rule=SIPDispatchRule(
+                    dispatch_rule_individual=SIPDispatchRuleIndividual(room_prefix="clauver-inbound-")
+                ),
+                name="Clauver Inbound Calls",
+            )
+        )
+        rule_id = rule_result.sip_dispatch_rule_id
+        print("✓")
+        return trunk_id, rule_id
+    except Exception as e:
+        print("✗")
+        print(f"  ❌ LiveKit inbound error: {e}")
+        sys.exit(1)
+    finally:
+        await lkapi.aclose()
+
+
+def _read_env_value(key: str) -> str | None:
+    if not ENV_FILE.exists():
+        return None
+    for line in ENV_FILE.read_text().splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
+def _detect_existing_setup() -> dict | None:
+    """Return existing outbound config from .env if fully populated, else None."""
+    trunk_id = _read_env_value("SIP_OUTBOUND_TRUNK_ID")
+    lk_url = _read_env_value("LIVEKIT_URL")
+    lk_key = _read_env_value("LIVEKIT_API_KEY")
+    lk_secret = _read_env_value("LIVEKIT_API_SECRET")
+    if trunk_id and lk_url and lk_key and lk_secret:
+        return {"trunk_id": trunk_id, "lk_url": lk_url, "lk_key": lk_key, "lk_secret": lk_secret}
+    return None
 
 
 def _update_env(values: dict[str, str]):
@@ -241,12 +394,84 @@ def _update_env(values: dict[str, str]):
 def _confirm(summary: dict):
     print()
     print("  ─── Summary ───")
-    print(f"    Twilio trunk:    {summary['domain_name']}")
-    print(f"    Phone number:    {summary['phone_number']}")
-    print(f"    LiveKit trunk:   {summary['livekit_trunk_id']}")
+    print(f"    Twilio trunk:          {summary['domain_name']}")
+    print(f"    Phone number:          {summary['phone_number']}")
+    print(f"    LiveKit outbound:      {summary['livekit_trunk_id']}")
+    if "inbound_trunk_id" in summary:
+        print(f"    LiveKit inbound:       {summary['inbound_trunk_id']}")
+        print(f"    LiveKit dispatch rule: {summary['dispatch_rule_id']}")
     print()
     answer = _input("Write to .env and finish? [Y/n]") or "y"
     return answer.lower() == "y"
+
+
+async def _run_inbound_only(existing: dict):
+    """Handle Journey B: add inbound to an already-configured outbound setup."""
+    print("─── Adding Inbound Calls to Existing Setup ───")
+    print()
+    print("  Outbound is already configured. We'll add inbound only.")
+    print("  Your existing outbound setup will not be touched.")
+    print()
+
+    # Need Twilio creds to mutate the trunk
+    print("─── Twilio Credentials ───")
+    print()
+    twilio_sid = _input("Twilio Account SID")
+    twilio_token = _input("Twilio Auth Token", secret=True)
+    print()
+    client = _validate_twilio(twilio_sid, twilio_token)
+    print()
+
+    # Restore LiveKit env vars from .env so lkapi picks them up
+    os.environ["LIVEKIT_URL"] = existing["lk_url"]
+    os.environ["LIVEKIT_API_KEY"] = existing["lk_key"]
+    os.environ["LIVEKIT_API_SECRET"] = existing["lk_secret"]
+
+    # Fetch trunk details from Twilio to get associated phone number
+    print("  Looking up existing trunks...", end=" ", flush=True)
+    try:
+        trunks = _find_clauver_trunks(client)
+        if not trunks:
+            print("✗")
+            print("  ❌ Could not find a Clauver trunk on Twilio.")
+            print("     Run a full re-setup (option 2) to create one.")
+            sys.exit(1)
+        print("✓")
+        print()
+        trunk = _select_clauver_trunk(client, trunks)
+        numbers = client.trunking.v1.trunks(trunk.sid).phone_numbers.list(limit=5)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print("✗")
+        print(f"  ❌ Could not fetch trunks: {e}")
+        sys.exit(1)
+
+    if not numbers:
+        print("  ❌ No phone number found on selected trunk.")
+        sys.exit(1)
+
+    phone_number = numbers[0].phone_number
+    print(f"  Using trunk: {trunk.domain_name} ({phone_number})")
+    print()
+
+    print("─── Provisioning Inbound ───")
+    print()
+    livekit_sip_host = _derive_livekit_sip_host(existing["lk_url"])
+    _add_twilio_origination(client, trunk.sid, livekit_sip_host)
+    inbound_trunk_id, dispatch_rule_id = await _create_livekit_inbound(phone_number)
+    print()
+
+    _update_env({"SIP_INBOUND_TRUNK_ID": inbound_trunk_id})
+    print("  ✓ .env updated")
+    print()
+    print("═══════════════════════════════════════════════════════")
+    print("✅ Inbound calling enabled!")
+    print()
+    print(f"  People can now call {phone_number} to reach LiveKit.")
+    print(f"  Each caller gets their own room: clauver-inbound-...")
+    print("═══════════════════════════════════════════════════════")
+    print()
 
 
 async def main():
@@ -255,6 +480,21 @@ async def main():
     # --- Check twilio package ---
     if not _check_twilio_installed():
         _install_twilio()
+
+    # --- Detect existing outbound setup and offer inbound-only shortcut ---
+    existing = _detect_existing_setup()
+    if existing:
+        print("  ✅ Detected existing outbound setup in .env")
+        print()
+        print("  What would you like to do?")
+        print("    1. Add inbound calls to existing setup (keep outbound intact)")
+        print("    2. Full re-setup (outbound + optional inbound)")
+        print()
+        choice = _input("Select [1/2]", default="1")
+        print()
+        if choice.strip() != "2":
+            await _run_inbound_only(existing)
+            return
 
     # --- Step 1: Twilio credentials ---
     print("─── Step 1: Twilio Credentials ───")
@@ -303,14 +543,24 @@ async def main():
     selected = numbers[choice - 1]
 
     # --- Check for existing trunk ---
-    existing_sid = _find_existing_clauver_trunk(client)
-    if existing_sid:
-        print(f"  ⚠️  Found existing Clauver trunk on Twilio (SID: {existing_sid})")
+    existing_trunks = _find_clauver_trunks(client)
+    if existing_trunks:
+        print(f"  ⚠️  Found {len(existing_trunks)} existing Clauver trunk(s) on Twilio:")
+        for t in existing_trunks:
+            print(f"       {t.domain_name} (SID: {t.sid})")
+        print()
         answer = _input("Create a new one anyway? [y/N]") or "n"
         if answer.lower() != "y":
             print("  Keeping existing trunk. Run again if you want to recreate.")
             sys.exit(0)
         print()
+
+    # --- Inbound opt-in ---
+    print("─── Inbound Calls (Optional) ───")
+    print()
+    print("  Lets people call your Twilio number and reach LiveKit.")
+    want_inbound = _input("Enable inbound calls? [y/N]", default="n").lower() == "y"
+    print()
 
     # --- Step 4: Provision ---
     print("─── Step 4: Provisioning ───")
@@ -323,6 +573,14 @@ async def main():
         twilio_result["sip_password"],
         twilio_result["phone_number"],
     )
+
+    inbound_trunk_id = None
+    dispatch_rule_id = None
+    if want_inbound:
+        livekit_sip_host = _derive_livekit_sip_host(lk_url)
+        _add_twilio_origination(client, twilio_result["trunk_sid"], livekit_sip_host)
+        inbound_trunk_id, dispatch_rule_id = await _create_livekit_inbound(twilio_result["phone_number"])
+
     print()
 
     # --- Step 5: Confirm and save ---
@@ -333,6 +591,9 @@ async def main():
         "livekit_key": lk_key,
         "livekit_secret": lk_secret,
     }
+    if inbound_trunk_id:
+        summary["inbound_trunk_id"] = inbound_trunk_id
+        summary["dispatch_rule_id"] = dispatch_rule_id
 
     if not _confirm(summary):
         print("  Aborted. Trunks were created but .env was not updated.")
@@ -342,12 +603,15 @@ async def main():
     print()
     print("─── Step 5: Saving to .env ───")
     print()
-    _update_env({
+    env_updates = {
         "LIVEKIT_URL": lk_url,
         "LIVEKIT_API_KEY": lk_key,
         "LIVEKIT_API_SECRET": lk_secret,
         "SIP_OUTBOUND_TRUNK_ID": livekit_trunk_id,
-    })
+    }
+    if inbound_trunk_id:
+        env_updates["SIP_INBOUND_TRUNK_ID"] = inbound_trunk_id
+    _update_env(env_updates)
     print("  ✓ .env updated")
     print()
 
@@ -355,6 +619,8 @@ async def main():
     print("✅ Done! Your Clauver is ready to make calls.")
     print()
     print(f"  Test: Tell Hermes \"Call {selected.phone_number} and say hello\"")
+    if want_inbound:
+        print(f"  Inbound: People can call {selected.phone_number} to reach LiveKit.")
     print("═══════════════════════════════════════════════════════")
     print()
 
