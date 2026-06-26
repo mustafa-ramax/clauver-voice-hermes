@@ -19,10 +19,13 @@ from dotenv import load_dotenv
 from livekit.agents import stt, tts
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions, NOT_GIVEN
 
+# Resolve Hermes home directory (supports custom HERMES_HOME, profiles, Windows)
+_HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
 # Load Hermes .env for shared API keys (OPENROUTER_API_KEY, DEEPSEEK_API_KEY, etc.)
 # Clauver's own .env (LiveKit keys) is loaded separately by agent.py.
 # override=False ensures Clauver's own .env takes priority if both define the same key.
-_hermes_env = Path.home() / ".hermes" / ".env"
+_hermes_env = _HERMES_HOME / ".env"
 if _hermes_env.exists():
     load_dotenv(_hermes_env, override=False)
 
@@ -32,11 +35,11 @@ _config_cache: dict | None = None
 
 
 def load_hermes_config() -> dict:
-    """Load and cache ~/.hermes/config.yaml."""
+    """Load and cache Hermes config.yaml (respects $HERMES_HOME)."""
     global _config_cache
     if _config_cache is not None:
         return _config_cache
-    config_path = Path.home() / ".hermes" / "config.yaml"
+    config_path = _HERMES_HOME / "config.yaml"
     if not config_path.exists():
         _config_cache = {}
         return _config_cache
