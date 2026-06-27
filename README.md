@@ -1,9 +1,9 @@
-# Clauver — Your AI Voice, For Real Phone Calls
+# Clauver — AI Phone Calls for Hermes Agent
 
-Clauver is an AI voice assistant that makes **real phone calls** on your behalf.
-You type what you want to say — Clauver calls, speaks, listens, and brings back the reply.
+> Open-source AI voice agent that makes real phone calls on your behalf. Outbound calling, real two-way conversation, voicemail handling. Free TTS + STT included. Works with 30+ LLM providers via Hermes Agent MCP.
 
-Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Zero extra AI cost.
+Clauver is an open-source AI voice agent that makes **real phone calls** on your behalf.
+You tell [Hermes Agent](https://github.com/NousResearch/hermes-agent) what to say — Clauver calls, speaks, listens, and brings back the reply. Zero extra AI cost.
 
 - **Free TTS** — Edge TTS (Microsoft neural voices, 41+ languages) Hermes default
 - **Free STT** — Local Whisper (runs on your CPU) Hermes default
@@ -12,7 +12,7 @@ Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Zero ext
 
 ---
 
-## What Clauver Can Do Today
+## Features
 
 - ✅ **Real two-way conversation** — not a one-way recorded message
 - ✅ **Delivers your message** and waits for a reply
@@ -234,6 +234,12 @@ python test_dispatch_api.py  # test a call dispatch
 
 ---
 
+## Keywords
+
+AI phone calls, voice agent, outbound calling, Hermes Agent, MCP tool, LiveKit SIP, Twilio, free TTS, free STT, open source, self-hosted, automated calls, voicemail detection, appointment booking by phone
+
+---
+
 ## License
 
 **AGPL-3.0** — Free to use, modify, and self-host. If you deploy a modified version as a network service, you must open-source your changes.
@@ -244,7 +250,7 @@ Commercial licensing available — contact for details.
 
 ## Links
 
-- [Clauver (Hermes edition)](https://github.com/mustafa-ramax/clauver-voice-hermes)
+- [Clauver Voice Agent for Hermes](https://github.com/mustafa-ramax/clauver-voice-hermes)
 - [Clauver (original, any agent)](https://github.com/mustafa-ramax/clauver-voice)
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 - [LiveKit](https://livekit.io)
