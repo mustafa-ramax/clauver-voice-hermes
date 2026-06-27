@@ -37,6 +37,12 @@ Just talk to Hermes naturally:
 > **"Call my partner and say I'm running 20 minutes late"**
 > → Done in 30 seconds. Message delivered.
 
+> **"Call me at 7am with my top 3 priorities for today"**
+> → Wake-up briefing delivered by phone — for when you ignore notifications but always answer a call.
+
+> **"Call this lead and confirm they got my proposal. Ask if Thursday works for a demo."**
+> → Business follow-up handled. No more phone anxiety.
+
 ---
 
 ## Setup (3 Steps)
@@ -209,6 +215,14 @@ Local Whisper is CPU-bound. Add `CLAUVER_STT_OVERRIDE=deepgram` + `CLAUVER_STT_A
 
 **Bedrock model error?**
 Newer Claude models require a cross-region inference profile. The bridge handles this automatically — if you still see errors, set `CLAUVER_LLM_OVERRIDE=openai` as a workaround.
+
+---
+
+## Why Clauver Exists
+
+I built Clauver after losing my voice unexpectedly for two months. No warning — went to sleep fine, woke up unable to speak. I couldn't make a single phone call — not even to book a doctor appointment. Every AI calling tool I found was expensive. So I made one that's free and open source — for anyone who can't speak, has phone anxiety, or just needs their AI to handle it. I'm recovering now, and I want this to help others.
+
+Whether you're disabled, anxious about calls, too busy, or just hate being on hold — Clauver Hermes Agent calls so you don't have to.
 
 ---
 
