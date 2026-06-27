@@ -274,6 +274,16 @@ def _create_twilio_trunk(client, phone_number_sid: str, phone_number: str):
     }
 
 
+def _prompt_livekit_sip_host(default: str = "") -> str:
+    print("  Find your SIP URI at: cloud.livekit.io → your project → Telephony → SIP URI")
+    raw = _input("LiveKit SIP URI (e.g. abc123xyz.sip.livekit.cloud)", default=default)
+    value = raw.strip().removeprefix("sip:")
+    if not value:
+        print("  ❌ SIP URI cannot be empty.")
+        sys.exit(1)
+    return value
+
+
 def _ensure_twilio_origination(client, trunk_sid: str, livekit_sip_host: str):
     """Add origination URI to Twilio trunk (idempotent — skips if already exists)."""
     print("  Configuring Twilio origination URI...", end=" ", flush=True)
@@ -291,11 +301,6 @@ def _ensure_twilio_origination(client, trunk_sid: str, livekit_sip_host: str):
         friendly_name="LiveKit Inbound",
     )
     print("✓")
-
-
-def _derive_livekit_sip_host(livekit_url: str) -> str:
-    host = livekit_url.replace("wss://", "").replace("ws://", "").rstrip("/")
-    return f"sip.{host}"
 
 
 async def _create_livekit_trunk(domain_name: str, sip_username: str, sip_password: str, phone_number: str) -> str:
@@ -454,6 +459,7 @@ def _confirm(summary: dict):
     if "inbound_trunk_id" in summary:
         print(f"    LiveKit inbound:       {summary['inbound_trunk_id']}")
         print(f"    LiveKit dispatch rule: {summary['dispatch_rule_id']}")
+        print(f"    LiveKit SIP URI:       {summary.get('livekit_sip_uri', '—')}")
     print()
     answer = _input("Write to .env and finish? [Y/n]") or "y"
     return answer.lower() == "y"
@@ -509,14 +515,17 @@ async def _run_inbound_only(existing: dict):
     print(f"  Using trunk: {trunk.domain_name} ({phone_number})")
     print()
 
+    cached_sip = _read_env_value("LIVEKIT_SIP_URI") or ""
+    livekit_sip_host = _prompt_livekit_sip_host(default=cached_sip)
+    print()
+
     print("─── Provisioning Inbound ───")
     print()
-    livekit_sip_host = _derive_livekit_sip_host(existing["lk_url"])
     _ensure_twilio_origination(client, trunk.sid, livekit_sip_host)
     inbound_trunk_id, dispatch_rule_id = await _create_livekit_inbound(phone_number)
     print()
 
-    _update_env({"SIP_INBOUND_TRUNK_ID": inbound_trunk_id})
+    _update_env({"SIP_INBOUND_TRUNK_ID": inbound_trunk_id, "LIVEKIT_SIP_URI": livekit_sip_host})
     print("  ✓ .env updated")
     print()
     print("═══════════════════════════════════════════════════════")
@@ -621,6 +630,10 @@ async def main():
     print()
     print("  Lets people call your Twilio number and reach LiveKit.")
     want_inbound = _input("Enable inbound calls? [y/N]", default="n").lower() == "y"
+    livekit_sip_host = None
+    if want_inbound:
+        print()
+        livekit_sip_host = _prompt_livekit_sip_host(default="")
     print()
 
     # --- Step 4: Provision ---
@@ -638,7 +651,6 @@ async def main():
     inbound_trunk_id = None
     dispatch_rule_id = None
     if want_inbound:
-        livekit_sip_host = _derive_livekit_sip_host(lk_url)
         _ensure_twilio_origination(client, twilio_result["trunk_sid"], livekit_sip_host)
         inbound_trunk_id, dispatch_rule_id = await _create_livekit_inbound(twilio_result["phone_number"])
 
@@ -655,6 +667,7 @@ async def main():
     if inbound_trunk_id:
         summary["inbound_trunk_id"] = inbound_trunk_id
         summary["dispatch_rule_id"] = dispatch_rule_id
+        summary["livekit_sip_uri"] = livekit_sip_host
 
     if not _confirm(summary):
         print("  Aborted. Resources were created but .env was not updated.")
@@ -674,6 +687,8 @@ async def main():
     }
     if inbound_trunk_id:
         env_updates["SIP_INBOUND_TRUNK_ID"] = inbound_trunk_id
+    if livekit_sip_host:
+        env_updates["LIVEKIT_SIP_URI"] = livekit_sip_host
     _update_env(env_updates)
     print("  ✓ .env updated")
     print()
