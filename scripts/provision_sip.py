@@ -18,6 +18,7 @@ import random
 import re
 import string
 import sys
+from datetime import date
 from pathlib import Path
 
 # --- Ensure we can import from project root ---
@@ -26,9 +27,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 ENV_FILE = PROJECT_ROOT / ".env"
 
+_PLACEHOLDER_PATTERNS = ("your-", "wss://your", "https://your", "changeme", "placeholder")
+
 
 def _random_string(length: int, chars: str = string.ascii_lowercase + string.digits) -> str:
     return "".join(random.choices(chars, k=length))
+
+
+def _is_placeholder(value: str) -> bool:
+    v = value.lower()
+    return any(p in v for p in _PLACEHOLDER_PATTERNS)
 
 
 def _print_header():
@@ -116,7 +124,7 @@ def _check_twilio_installed():
 
 def _install_twilio():
     print("  ⚠️  'twilio' package not found.")
-    answer = _input("Install it now? [Y/n]") or "y"
+    answer = _input("Install it now?", default="y")
     if answer.lower() != "y":
         print("  ❌ Cannot proceed without twilio. Install manually:")
         print(f"     {sys.executable} -m pip install twilio")
@@ -144,12 +152,23 @@ def _validate_twilio(account_sid: str, auth_token: str):
         sys.exit(1)
 
 
-def _validate_livekit(url: str, api_key: str, api_secret: str):
-    # Set env vars so LiveKitAPI picks them up
+async def _validate_livekit(url: str, api_key: str, api_secret: str):
     os.environ["LIVEKIT_URL"] = url
     os.environ["LIVEKIT_API_KEY"] = api_key
     os.environ["LIVEKIT_API_SECRET"] = api_secret
-    print("  ✓ LiveKit credentials saved")
+    from livekit import api
+    from livekit.protocol.sip import ListSIPOutboundTrunkRequest
+    print("  Verifying LiveKit credentials...", end=" ", flush=True)
+    lkapi = api.LiveKitAPI()
+    try:
+        await lkapi.sip.list_outbound_trunk(ListSIPOutboundTrunkRequest())
+        print("✓")
+    except Exception as e:
+        print("✗")
+        print(f"  ❌ LiveKit auth failed: {e}")
+        sys.exit(1)
+    finally:
+        await lkapi.aclose()
 
 
 def _list_twilio_numbers(client) -> list:
@@ -255,11 +274,17 @@ def _create_twilio_trunk(client, phone_number_sid: str, phone_number: str):
     }
 
 
-def _add_twilio_origination(client, trunk_sid: str, livekit_sip_host: str):
-    """Add origination URI to Twilio trunk so inbound PSTN calls route to LiveKit."""
-    print("  Adding Twilio origination URI...", end=" ", flush=True)
+def _ensure_twilio_origination(client, trunk_sid: str, livekit_sip_host: str):
+    """Add origination URI to Twilio trunk (idempotent — skips if already exists)."""
+    print("  Configuring Twilio origination URI...", end=" ", flush=True)
+    sip_url = f"sip:{livekit_sip_host}"
+    existing = client.trunking.v1.trunks(trunk_sid).origination_urls.list()
+    for o in existing:
+        if o.sip_url == sip_url:
+            print("✓ (already exists)")
+            return
     client.trunking.v1.trunks(trunk_sid).origination_urls.create(
-        sip_url=f"sip:{livekit_sip_host}",
+        sip_url=sip_url,
         priority=1,
         weight=1,
         enabled=True,
@@ -298,17 +323,20 @@ async def _create_livekit_trunk(domain_name: str, sip_username: str, sip_passwor
     except Exception as e:
         print("✗")
         print(f"  ❌ LiveKit error: {e}")
+        print("  ℹ️  The Twilio trunk was created — delete it from twilio.com/console if you want to start fresh.")
         sys.exit(1)
     finally:
         await lkapi.aclose()
 
 
 async def _create_livekit_inbound(phone_number: str) -> tuple[str, str]:
-    """Create LiveKit inbound trunk + dispatch rule. Returns (trunk_id, rule_id)."""
+    """Create (or reuse) LiveKit inbound trunk + dispatch rule. Returns (trunk_id, rule_id)."""
     from livekit import api
     from livekit.protocol.sip import (
         CreateSIPInboundTrunkRequest,
         SIPInboundTrunkInfo,
+        ListSIPInboundTrunkRequest,
+        ListSIPDispatchRuleRequest,
         CreateSIPDispatchRuleRequest,
         SIPDispatchRule,
         SIPDispatchRuleIndividual,
@@ -316,28 +344,45 @@ async def _create_livekit_inbound(phone_number: str) -> tuple[str, str]:
 
     lkapi = api.LiveKitAPI()
     try:
-        print("  Creating LiveKit inbound trunk...", end=" ", flush=True)
-        trunk_result = await lkapi.sip.create_inbound_trunk(
-            CreateSIPInboundTrunkRequest(trunk=SIPInboundTrunkInfo(
-                name="Clauver Inbound",
-                numbers=[phone_number],
-            ))
+        # --- Inbound trunk ---
+        print("  Configuring LiveKit inbound trunk...", end=" ", flush=True)
+        existing_trunks = await lkapi.sip.list_inbound_trunk(
+            ListSIPInboundTrunkRequest(numbers=[phone_number])
         )
-        trunk_id = trunk_result.sip_trunk_id
-        print("✓")
-
-        print("  Creating LiveKit dispatch rule...", end=" ", flush=True)
-        rule_result = await lkapi.sip.create_dispatch_rule(
-            CreateSIPDispatchRuleRequest(
-                trunk_ids=[trunk_id],
-                rule=SIPDispatchRule(
-                    dispatch_rule_individual=SIPDispatchRuleIndividual(room_prefix="clauver-inbound-")
-                ),
-                name="Clauver Inbound Calls",
+        if existing_trunks.items:
+            trunk_id = existing_trunks.items[0].sip_trunk_id
+            print("✓ (already exists)")
+        else:
+            result = await lkapi.sip.create_inbound_trunk(
+                CreateSIPInboundTrunkRequest(trunk=SIPInboundTrunkInfo(
+                    name="Clauver Inbound",
+                    numbers=[phone_number],
+                ))
             )
+            trunk_id = result.sip_trunk_id
+            print("✓")
+
+        # --- Dispatch rule ---
+        print("  Configuring LiveKit dispatch rule...", end=" ", flush=True)
+        existing_rules = await lkapi.sip.list_dispatch_rule(
+            ListSIPDispatchRuleRequest(trunk_ids=[trunk_id])
         )
-        rule_id = rule_result.sip_dispatch_rule_id
-        print("✓")
+        if existing_rules.items:
+            rule_id = existing_rules.items[0].sip_dispatch_rule_id
+            print("✓ (already exists)")
+        else:
+            rule_result = await lkapi.sip.create_dispatch_rule(
+                CreateSIPDispatchRuleRequest(
+                    trunk_ids=[trunk_id],
+                    rule=SIPDispatchRule(
+                        dispatch_rule_individual=SIPDispatchRuleIndividual(room_prefix="clauver-inbound-")
+                    ),
+                    name="Clauver Inbound Calls",
+                )
+            )
+            rule_id = rule_result.sip_dispatch_rule_id
+            print("✓")
+
         return trunk_id, rule_id
     except Exception as e:
         print("✗")
@@ -352,29 +397,38 @@ def _read_env_value(key: str) -> str | None:
         return None
     for line in ENV_FILE.read_text().splitlines():
         if line.startswith(f"{key}="):
-            return line.split("=", 1)[1].strip()
+            val = line.split("=", 1)[1].strip()
+            return val.strip('"').strip("'")
     return None
 
 
 def _detect_existing_setup() -> dict | None:
-    """Return existing outbound config from .env if fully populated, else None."""
+    """Return existing outbound config from .env if fully populated and not placeholders."""
     trunk_id = _read_env_value("SIP_OUTBOUND_TRUNK_ID")
     lk_url = _read_env_value("LIVEKIT_URL")
     lk_key = _read_env_value("LIVEKIT_API_KEY")
     lk_secret = _read_env_value("LIVEKIT_API_SECRET")
-    if trunk_id and lk_url and lk_key and lk_secret:
-        return {"trunk_id": trunk_id, "lk_url": lk_url, "lk_key": lk_key, "lk_secret": lk_secret}
-    return None
+    if not (trunk_id and lk_url and lk_key and lk_secret):
+        return None
+    if any(_is_placeholder(v) for v in [trunk_id, lk_url, lk_key, lk_secret]):
+        return None
+    inbound_trunk_id = _read_env_value("SIP_INBOUND_TRUNK_ID")
+    return {
+        "trunk_id": trunk_id,
+        "lk_url": lk_url,
+        "lk_key": lk_key,
+        "lk_secret": lk_secret,
+        "inbound_trunk_id": inbound_trunk_id,
+    }
 
 
 def _update_env(values: dict[str, str]):
-    """Update .env file, preserving existing content."""
-    # Backup
+    """Update .env file, preserving existing content. Backs up with date suffix."""
     if ENV_FILE.exists():
-        backup = ENV_FILE.with_suffix(".env.backup")
+        date_str = date.today().isoformat()
+        backup = ENV_FILE.with_name(f".env.backup.{date_str}")
         backup.write_text(ENV_FILE.read_text())
 
-    # Read existing
     lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
 
     for key, value in values.items():
@@ -458,7 +512,7 @@ async def _run_inbound_only(existing: dict):
     print("─── Provisioning Inbound ───")
     print()
     livekit_sip_host = _derive_livekit_sip_host(existing["lk_url"])
-    _add_twilio_origination(client, trunk.sid, livekit_sip_host)
+    _ensure_twilio_origination(client, trunk.sid, livekit_sip_host)
     inbound_trunk_id, dispatch_rule_id = await _create_livekit_inbound(phone_number)
     print()
 
@@ -484,11 +538,18 @@ async def main():
     # --- Detect existing outbound setup and offer inbound-only shortcut ---
     existing = _detect_existing_setup()
     if existing:
-        print("  ✅ Detected existing outbound setup in .env")
-        print()
-        print("  What would you like to do?")
-        print("    1. Add inbound calls to existing setup (keep outbound intact)")
-        print("    2. Full re-setup (outbound + optional inbound)")
+        if existing.get("inbound_trunk_id"):
+            print("  ✅ Detected existing outbound + inbound setup in .env")
+            print()
+            print("  What would you like to do?")
+            print("    1. Re-configure inbound (keeps outbound intact)")
+            print("    2. Full re-setup (outbound + optional inbound)")
+        else:
+            print("  ✅ Detected existing outbound setup in .env")
+            print()
+            print("  What would you like to do?")
+            print("    1. Add inbound calls to existing setup (keep outbound intact)")
+            print("    2. Full re-setup (outbound + optional inbound)")
         print()
         choice = _input("Select [1/2]", default="1")
         print()
@@ -512,7 +573,7 @@ async def main():
     lk_key = _input("LiveKit API Key")
     lk_secret = _input("LiveKit API Secret", secret=True)
     print()
-    _validate_livekit(lk_url, lk_key, lk_secret)
+    await _validate_livekit(lk_url, lk_key, lk_secret)
     print()
 
     # --- Step 3: Phone number ---
@@ -578,7 +639,7 @@ async def main():
     dispatch_rule_id = None
     if want_inbound:
         livekit_sip_host = _derive_livekit_sip_host(lk_url)
-        _add_twilio_origination(client, twilio_result["trunk_sid"], livekit_sip_host)
+        _ensure_twilio_origination(client, twilio_result["trunk_sid"], livekit_sip_host)
         inbound_trunk_id, dispatch_rule_id = await _create_livekit_inbound(twilio_result["phone_number"])
 
     print()
@@ -596,8 +657,10 @@ async def main():
         summary["dispatch_rule_id"] = dispatch_rule_id
 
     if not _confirm(summary):
-        print("  Aborted. Trunks were created but .env was not updated.")
-        print(f"  Your SIP_OUTBOUND_TRUNK_ID is: {livekit_trunk_id}")
+        print("  Aborted. Resources were created but .env was not updated.")
+        print(f"  SIP_OUTBOUND_TRUNK_ID={livekit_trunk_id}")
+        if inbound_trunk_id:
+            print(f"  SIP_INBOUND_TRUNK_ID={inbound_trunk_id}")
         return
 
     print()
