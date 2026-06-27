@@ -5,8 +5,8 @@ You type what you want to say — Clauver calls, speaks, listens, and brings bac
 
 Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Zero extra AI cost.
 
-- **Free TTS** — Edge TTS (Microsoft neural voices, 41+ languages) Hermes deafult
-- **Free STT** — Local Whisper (runs on your CPU) Hermes deafult
+- **Free TTS** — Edge TTS (Microsoft neural voices, 41+ languages) Hermes default
+- **Free STT** — Local Whisper (runs on your CPU) Hermes default
 - **Free LLM** — Uses whatever you already pay for in Hermes
 - **You only pay phone minutes** — ~$0.013/min via Twilio SIP
 
@@ -163,7 +163,7 @@ You → Hermes → MCP tool → Worker auto-starts → LiveKit → SIP → Phone
 | AI cost | $0 (reuse Hermes) | included in fee | included in fee |
 | LiveKit account | Free tier | N/A | N/A |
 | Real conversation | ✅ | ✅ | ✅ |
-| Inbound calls | 🔜 roadmap | ❌ | ❌ |
+| Inbound calls | ✅ setup automated (handler 🔜) | ❌ | ❌ |
 | Self-hosted | ✅ | ❌ | ❌ |
 | Open source | ✅ | ❌ | ❌ |
 | Returns structured results | 🔜 roadmap | ❌ | partial |
@@ -185,7 +185,7 @@ Detected automatically from `~/.hermes/config.yaml`. Switch providers in Hermes 
 ## Roadmap
 
 - 🔜 **Call results returned to Hermes chat** — see "Booked for 2pm" directly in conversation, not just logs
-- 🔜 **Inbound calls** — Clauver answers your phone, triages, takes messages (LiveKit SIP supports this natively — needs agent code)
+- 🔜 **Inbound calls** — SIP provisioning is automated (`provision_sip.py` sets up Twilio + LiveKit inbound trunk). Agent handler to answer, triage, and take messages is not built yet — contributions welcome.
 - 🔜 **Call recordings + transcripts** — saved and summarised after each call
 - 🔜 **Custom agent modes** — booking, enquiry, message-delivery with different behaviors and tools
 

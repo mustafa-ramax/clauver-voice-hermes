@@ -110,6 +110,7 @@ The script will ask for:
 - Which phone number to use (picks from your Twilio numbers)
 
 It handles the SIP trunk configuration on both sides and writes everything to `.env`.
+Fully supports Twilio — this is the recommended way to connect your phone number.
 
 **Already have a SIP trunk?** Just edit `~/.clauver/.env` manually:
 ```
